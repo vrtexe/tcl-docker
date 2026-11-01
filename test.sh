@@ -27,6 +27,10 @@ if {[package vsatisfies [info tclversion] 8.6-]} {
 	package require sqlite3
 	if {[zlib decompress [zlib compress hello]] ne "hello"} { puts stderr "FAIL: zlib"; exit 1 }
 }
+# Tcl 8.5's configure probe can wrongly decide the C stack grows up, which disables its stack check
+set cfg [open /usr/local/lib/tclConfig.sh]
+if {[string match *TCL_STACK_GROWS_UP=1* [read \$cfg]]} { puts stderr "FAIL: TCL_STACK_GROWS_UP=1"; exit 1 }
+close \$cfg
 if {![file exists /usr/local/share/licenses/tcl/license.terms]} { puts stderr "FAIL: license missing"; exit 1 }
 # images with a shell also provide /usr/bin/tclsh for scripts with a hardcoded #! line
 if {[file exists /bin/sh]

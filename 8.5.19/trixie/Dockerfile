@@ -16,7 +16,9 @@ RUN set -eux; \
 	rm tcl.tar.gz; \
 	cd /usr/src/tcl/unix; \
 # 8.5's configure probes use implicit declarations and K&R prototypes, which newer gcc rejects
-	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' ;; esac; \
+# its stack-direction probe is optimised away by newer gcc and answers "up"; every
+# supported CPU (x86-64, arm64) grows the stack down
+	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' tcl_cv_stack_grows_up=no ;; esac; \
 	./configure --prefix=/usr/local --enable-threads --enable-shared; \
 # Tcl 9's bundled packages run the in-tree tclsh, whose rpath points at the not yet installed libtcl
 	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \

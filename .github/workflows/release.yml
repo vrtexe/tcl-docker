@@ -1,0 +1,98 @@
+name: release
+
+# A v* tag creates a GitHub Release with portable binaries and the Tcl sources they were built
+# from. It builds only the variants marked with "libc" in versions.json (Rocky Linux 8 for
+# glibc, Alpine for musl) from the tagged commit, tests them, and publishes no images.
+# The layer cache is shared with build.yml (same scopes; a tag run may read main's cache),
+# so a release of unchanged Dockerfiles is mostly cache hits.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      builds: ${{ steps.m.outputs.builds }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: |
+          builds=$(jq -c '[.variants as $vars | .versions | keys[] as $v
+            | $vars | to_entries[] | select(.value.libc) | {version: $v, variant: .key, libc: .value.libc}
+            | (. + {arch: "amd64", runner: "ubuntu-24.04"}), (. + {arch: "arm64", runner: "ubuntu-24.04-arm"})]' versions.json)
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    name: ${{ matrix.version }}-${{ matrix.libc }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ matrix.version }}
+      ARCH: ${{ matrix.arch }}
+      LIBC: ${{ matrix.libc }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.builds) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.version }}/${{ matrix.variant }}
+          pull: true
+          load: true
+          tags: tcl-test
+          cache-from: type=gha,scope=${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
+      - name: Test
+        run: ./test.sh tcl-test "$VERSION"
+      - name: Package tarball
+        run: |
+          name="tcl-$VERSION-linux-$ARCH-$LIBC"
+          id=$(docker create tcl-test)
+          docker cp "$id:/usr/local" "$name"
+          docker rm "$id"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tarball-${{ matrix.version }}-${{ matrix.arch }}-${{ matrix.libc }}
+          path: tcl-*.tar.gz*
+
+  release:
+    # all or nothing: a release is only created when every tarball built and passed its test
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: tarball-*
+          merge-multiple: true
+      # the unmodified official sources the binaries were built from, checked against versions.json
+      - name: Add Tcl sources
+        run: |
+          jq -r '.versions | to_entries[] | "\(.key) \(.value.sha256)"' versions.json |
+          while read -r version sha256; do
+            file="tcl$version-src.tar.gz"
+            curl -fsSL --retry 5 --retry-delay 5 -o "dist/$file" \
+              "https://downloads.sourceforge.net/project/tcl/Tcl/$version/$file"
+            echo "$sha256  dist/$file" | sha256sum -c -
+            (cd dist && sha256sum "$file" > "$file.sha256")
+          done
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

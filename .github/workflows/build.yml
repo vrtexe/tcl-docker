@@ -1,8 +1,8 @@
 name: build
 
 # Pull requests build and test only. Pushes to main, the monthly rebuild (base image fixes)
-# and v* tags also publish to GHCR, then mirror to Docker Hub; v* tags additionally create a
-# GitHub Release with portable tarballs (glibc from the Rocky 8 builds, musl from Alpine).
+# and manual runs also publish to GHCR, then mirror to Docker Hub.
+# GitHub Releases with binary tarballs come from release.yml (v* tags); it publishes no images.
 #
 # GHCR is the primary registry. Docker Hub's free tier rate-limits the bursts that 100+
 # parallel jobs produce (even pushes), so only one job talks to it, one image at a time,
@@ -10,7 +10,6 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   schedule:
     - cron: '0 4 1 * *'
@@ -47,7 +46,7 @@ jobs:
       - id: m
         run: |
           images=$(jq -c '[.variants as $vars | .versions | keys[] as $v | $vars | to_entries[]
-            | {version: $v, variant: .key, libc: (.value.libc // ""), dev: (.value.dev // false)}]' versions.json)
+            | {version: $v, variant: .key, dev: (.value.dev // false)}]' versions.json)
           # one build job per image and architecture; it builds the runtime and, if any, the dev target
           builds=$(jq -c '[.[] as $i | ({arch: "amd64", runner: "ubuntu-24.04"}, {arch: "arm64", runner: "ubuntu-24.04-arm"}) | $i + .]' <<<"$images")
           # one tagging job per published image: runtime for all, dev where the variant has one
@@ -66,7 +65,6 @@ jobs:
       VERSION: ${{ matrix.version }}
       VARIANT: ${{ matrix.variant }}
       ARCH: ${{ matrix.arch }}
-      LIBC: ${{ matrix.libc }}
       SCOPE: ${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -121,21 +119,6 @@ jobs:
       - name: Test dev
         if: matrix.dev
         run: TARGET=dev ./test.sh tcl-test-dev "$VERSION"
-
-      - name: Package tarball
-        if: matrix.libc != ''
-        run: |
-          name="tcl-$VERSION-linux-$ARCH-$LIBC"
-          id=$(docker create tcl-test)
-          docker cp "$id:/usr/local" "$name"
-          docker rm "$id"
-          tar -czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-      - if: matrix.libc != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: tarball-${{ matrix.version }}-${{ matrix.arch }}-${{ matrix.libc }}
-          path: tcl-*.tar.gz*
 
       # the tested images again (cache hits), pushed untagged to GHCR;
       # the tagging job then only writes tag lists
@@ -266,32 +249,3 @@ jobs:
             echo "::endgroup::"
           done < <(jq -r '.[] | "\(.version) \(.variant) \(.target)"' <<<"$IMAGES")
           if [ -n "$failed" ]; then echo "not mirrored:$failed" >&2; exit 1; fi
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          pattern: tarball-*
-          merge-multiple: true
-      # the unmodified official sources the binaries were built from, checked against versions.json
-      - name: Add Tcl sources
-        run: |
-          jq -r '.versions | to_entries[] | "\(.key) \(.value.sha256)"' versions.json |
-          while read -r version sha256; do
-            file="tcl$version-src.tar.gz"
-            curl -fsSL --retry 5 --retry-delay 5 -o "dist/$file" \
-              "https://downloads.sourceforge.net/project/tcl/Tcl/$version/$file"
-            echo "$sha256  dist/$file" | sha256sum -c -
-            (cd dist && sha256sum "$file" > "$file.sha256")
-          done
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

@@ -169,12 +169,16 @@ a cached base image of another architecture.
 
 ## CI
 
-`.github/workflows/build.yml` builds every version and variant natively on amd64 and arm64
-runners and runs `test.sh` on each. Pushes to `main`, the monthly rebuild and `v*` tags
-publish multi-arch tags to Docker Hub and GHCR; `v*` tags also create the GitHub Release
-with the tarballs. It needs the repository variable `DOCKERHUB_USERNAME` and the secret
-`DOCKERHUB_TOKEN` (a Docker Hub access token). GHCR uses the workflow's own `GITHUB_TOKEN`;
-after the first push, set the `tcl` package to public under the package settings.
+- `.github/workflows/build.yml` builds every version and variant natively on amd64 and arm64
+  runners and runs `test.sh` on each. Pushes to `main`, the monthly rebuild and manual runs
+  publish multi-arch tags to GHCR, then a single job mirrors them to Docker Hub with
+  `skopeo` (one image at a time, which stays within Docker Hub's rate limits). It needs the
+  repository variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN` (a Docker Hub
+  access token); GHCR uses the workflow's own `GITHUB_TOKEN`. After the first push, set the
+  `tcl` package to public under the package settings.
+- `.github/workflows/release.yml` runs on `v*` tags (for example `v2026.11.0`). It builds and
+  tests the tarball variants from the tagged commit and creates the GitHub Release with the
+  binary tarballs and the Tcl sources. It publishes no images.
 
 ## License
 

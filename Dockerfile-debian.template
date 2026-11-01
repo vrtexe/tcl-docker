@@ -20,6 +20,8 @@ RUN set -eux; \
 	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \
 	LD_LIBRARY_PATH="$PWD" make install; \
 	ln -s "tclsh${TCL_VERSION%.*}" /usr/local/bin/tclsh; \
+# many Tcl scripts hardcode #!/usr/bin/tclsh, where Debian and RHEL put their own tclsh
+	ln -s /usr/local/bin/tclsh /usr/bin/tclsh; \
 	ldconfig; \
 	install -D -m 644 /usr/src/tcl/license.terms /usr/local/share/licenses/tcl/license.terms; \
 	cd /; \

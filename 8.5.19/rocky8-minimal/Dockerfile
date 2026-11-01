@@ -6,6 +6,7 @@ ENV TCL_VERSION=8.5.19
 ENV TCL_SHA256=d3f04456da873d17f02efc30734b0300fb6c3b85028d445fe284b83253a6db18
 
 # The mirrorlist can hand out a plain-http mirror that stalls; use the CDN-backed origin over https.
+# The toolchain stays in this stage: it is also the base of the "dev" target.
 ARG ROCKY_MIRROR=https://dl.rockylinux.org
 RUN set -eux; \
 	sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e "s|^#baseurl=http://dl.rockylinux.org|baseurl=${ROCKY_MIRROR}|" \
@@ -28,10 +29,28 @@ RUN set -eux; \
 	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \
 	LD_LIBRARY_PATH="$PWD" make install; \
 	ln -s "tclsh${TCL_VERSION%.*}" /usr/local/bin/tclsh; \
-	install -D -m 644 /usr/src/tcl/license.terms /usr/local/share/licenses/tcl/license.terms
+	install -D -m 644 /usr/src/tcl/license.terms /usr/local/share/licenses/tcl/license.terms; \
+	cd /; \
+	rm -rf /usr/src/tcl; \
+# RHEL-family systems do not search /usr/local/lib by default
+	echo /usr/local/lib > /etc/ld.so.conf.d/usr-local.conf; \
+	ldconfig; \
+# run from /dev/stdin, not a pipe, so a Tcl error or a wrong version fails the build
+	echo "if {[info patchlevel] ne {$TCL_VERSION}} { error \"got [info patchlevel]\" }" | tclsh /dev/stdin
 
 
-# microdnf cannot cleanly remove the toolchain again, so the result moves to a fresh image
+# "-dev" tags: Tcl plus make, gcc, glibc and zlib headers and curl, for building extensions
+# that then run on the runtime image
+FROM build AS dev
+
+# many Tcl scripts hardcode #!/usr/bin/tclsh, where Debian and RHEL put their own tclsh
+RUN ln -s /usr/local/bin/tclsh /usr/bin/tclsh
+
+CMD ["tclsh"]
+
+
+# runtime: only Tcl on top of the base image; stays the last stage, so it is the default.
+# (microdnf cannot cleanly remove the toolchain, so a fresh image is the only lean option anyway)
 FROM docker.io/rockylinux/rockylinux:8-minimal
 
 ENV TCL_VERSION=8.5.19
@@ -39,11 +58,17 @@ ENV TCL_SHA256=d3f04456da873d17f02efc30734b0300fb6c3b85028d445fe284b83253a6db18
 
 COPY --from=build /usr/local /usr/local
 
-# RHEL-family systems do not search /usr/local/lib by default
 RUN set -eux; \
+# RHEL-family systems do not search /usr/local/lib by default
 	echo /usr/local/lib > /etc/ld.so.conf.d/usr-local.conf; \
 	ldconfig; \
-# run from /dev/stdin, not a pipe, so a Tcl error or a wrong version fails the build
+# Tcl only links glibc and zlib, which the base image has; fail loudly if that ever changes
+	for f in /usr/local/bin/tclsh?* /usr/local/lib/*.so* /usr/local/lib/*/*.so; do \
+		[ -e "$f" ] || continue; \
+		if ldd "$f" 2>&1 | grep 'not found'; then echo "missing library for $f" >&2; exit 1; fi; \
+	done; \
+# many Tcl scripts hardcode #!/usr/bin/tclsh, where Debian and RHEL put their own tclsh
+	ln -s /usr/local/bin/tclsh /usr/bin/tclsh; \
 	echo "if {[info patchlevel] ne {$TCL_VERSION}} { error \"got [info patchlevel]\" }" | tclsh /dev/stdin
 
 CMD ["tclsh"]

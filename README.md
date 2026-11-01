@@ -33,11 +33,48 @@ for 9.1, and for 8.5, which no distribution ships any more.
 
 Sizes are uncompressed, measured on arm64.
 
-Tags: `<version>-<variant>`, plus `<minor>-<variant>` for the newest patch of a minor
-(`8.6-alpine`) and `<major>-<variant>` for the newest of a major (`8-alpine`).
-Examples: `8.6`, `8.6-slim`, `9.1-alpine`, `8.5.13-rocky8-minimal`, `latest`.
+Debian slim, Alpine and both Rocky Linux variants also come as `-dev` images: the same Tcl
+plus `make`, `gcc`, the C library and zlib headers, and `curl`. Build an extension on the
+`-dev` image, then copy the result into the matching runtime image; both share the same
+Tcl build and C library. The Debian image needs no `-dev` tag (it already has the
+toolchain), and distroless has none by design (build on `slim-dev` instead).
+
 Each tag holds both architectures; `docker pull` picks the one matching the host,
 `--platform linux/arm64` picks one explicitly.
+
+## Tags
+
+Every image is tagged `<version>-<variant>`. Shorter aliases follow the newest release:
+`<minor>-<variant>` points to the newest patch of that minor version, `<major>-<variant>`
+to the newest of that major version, and the bare variant name to the newest overall.
+Alpine as the example:
+
+| Tcl | Tags |
+|---|---|
+| 8.5.13 | `8.5.13-alpine` `8.5.13-alpine3.24` |
+| 8.5.19 | `8.5.19-alpine` `8.5.19-alpine3.24` `8.5-alpine` `8.5-alpine3.24` |
+| 8.6.18 | `8.6.18-alpine` `8.6.18-alpine3.24` `8.6-alpine` `8.6-alpine3.24` `8-alpine` `8-alpine3.24` |
+| 9.0.4 | `9.0.4-alpine` `9.0.4-alpine3.24` `9.0-alpine` `9.0-alpine3.24` |
+| 9.1.0 | `9.1.0-alpine` `9.1.0-alpine3.24` `9.1-alpine` `9.1-alpine3.24` `9-alpine` `9-alpine3.24` `alpine` `alpine3.24` |
+
+The other variants follow the same pattern with their own suffix:
+
+- Debian: no suffix or `-trixie`, so `8.6`, `8.6.18`, `9` and `latest` are the Debian image.
+- Debian slim: `-slim` or `-slim-trixie` (`8.6-slim`, `slim`).
+- Rocky Linux and distroless: `-rocky9-minimal`, `-rocky8-minimal`, `-distroless`
+  (`8.6-rocky8-minimal`, `distroless`).
+- `-dev` images: every tag of the runtime image plus `-dev` (`8.6-alpine-dev`,
+  `8.5.13-rocky8-minimal-dev`, `slim-dev`).
+
+Choosing a tag:
+
+- `8.5-alpine` is 8.5.19, the newest 8.5. Applications that require an exact patch level,
+  such as `package require -exact Tcl 8.5.13`, need the full version: `8.5.13-alpine`.
+- `-alpine` and `-slim` move to the next distribution release once the images adopt it;
+  `-alpine3.24` and `-slim-trixie` stay on that release.
+- All tags, including exact versions, are rebuilt monthly to pick up operating system
+  security fixes, so their content changes while the Tcl version stays the same. To freeze
+  an image completely, pin its digest: `tcl:8.5.13-alpine@sha256:<digest>`.
 
 Published to Docker Hub (`docker.io/<user>/tcl`) and the GitHub Container Registry
 (`ghcr.io/<owner>/tcl`) with identical tags and digests.
@@ -57,6 +94,21 @@ FROM <user>/tcl:8.6-slim
 COPY app.tcl /app/
 CMD ["tclsh", "/app/app.tcl"]
 ```
+
+Building a C extension on `-dev` and shipping it on the runtime image:
+
+```dockerfile
+FROM <user>/tcl:8.6-alpine-dev AS build
+COPY myext.c /src/
+RUN gcc -shared -fPIC -DUSE_TCL_STUBS -I/usr/local/include \
+      -o /src/libmyext.so /src/myext.c /usr/local/lib/libtclstub8.6.a
+
+FROM <user>/tcl:8.6-alpine
+COPY --from=build /src/libmyext.so /usr/local/lib/myext/
+```
+
+Scripts with a hardcoded `#!/usr/bin/tclsh` line work as-is: every image with a shell
+links `/usr/bin/tclsh` to the installed `tclsh`.
 
 On distroless, `exec` can only run what is in the image; scripts that call `exec ls` and
 similar need another variant.
@@ -89,7 +141,8 @@ The layout follows the official Docker images:
   committed, so each one can be read and built on its own:
   `docker build 8.6.18/alpine3.24`.
 - `tags.sh <version> <variant>` prints the tags for one image.
-- `test.sh <image> <version>` smoke-tests an image on the host architecture.
+- `test.sh <image> <version>` smoke-tests an image on the host architecture;
+  `TARGET=dev` also compiles and loads a C extension.
 
 To add or update a version: edit `versions.json`, run `./apply-templates.sh`, commit both.
 
@@ -98,6 +151,8 @@ To add or update a version: edit `versions.json`, run `./apply-templates.sh`, co
 ```sh
 docker build -t tcl-local 8.6.18/alpine3.24
 ./test.sh tcl-local 8.6.18
+docker build --target dev -t tcl-local-dev 8.6.18/alpine3.24
+TARGET=dev ./test.sh tcl-local-dev 8.6.18
 
 # another architecture, under emulation (Docker Desktop, colima with Rosetta, or QEMU)
 docker build --platform linux/amd64 -t tcl-local 8.6.18/alpine3.24

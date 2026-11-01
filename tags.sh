@@ -4,11 +4,12 @@
 # A version gets its minor alias (8.6) if it is the newest of that minor, the major
 # alias (8) if newest of that major, and "latest" if newest overall.
 # trixie is the default variant (no suffix); slim and alpine also get short names.
+# A third argument "dev" gives the tags of the -dev image: every tag above plus "-dev".
 set -euo pipefail
 cd "$(dirname "$0")"
-version=$1 variant=$2
+version=$1 variant=$2 target=${3:-runtime}
 
-jq -r --arg v "$version" --arg var "$variant" '
+jq -r --arg v "$version" --arg var "$variant" --arg target "$target" '
 	def vkey: split(".") | map(tonumber);
 	(.versions | keys | sort_by(vkey)) as $all
 	| ($v | split(".")) as $p
@@ -24,5 +25,6 @@ jq -r --arg v "$version" --arg var "$variant" '
 	   else ["-\($var)"] end) as $suffixes
 	| [$names[] as $n | $suffixes[] as $s | $n + $s]
 	  + (if newest(true) then [$suffixes[] | if . == "" then "latest" else ltrimstr("-") end] else [] end)
+	| if $target == "dev" then map(. + "-dev") else . end
 	| join(" ")
 ' versions.json

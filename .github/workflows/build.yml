@@ -24,6 +24,8 @@ env:
   # GHCR needs nothing extra: GITHUB_TOKEN pushes to ghcr.io/<owner>/tcl (GHCR_IMAGE, set per job)
   IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/tcl
   PUBLISH: ${{ github.event_name != 'pull_request' }}
+  # secrets reach pull requests from branches of this repository, not from forks
+  HAS_SECRETS: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
 jobs:
   generated:
@@ -36,17 +38,20 @@ jobs:
   matrix:
     runs-on: ubuntu-24.04
     outputs:
-      images: ${{ steps.m.outputs.images }}
       builds: ${{ steps.m.outputs.builds }}
+      tags: ${{ steps.m.outputs.tags }}
     steps:
       - uses: actions/checkout@v7
       - id: m
         run: |
-          images=$(jq -c '[.variants as $vars | .versions | keys[] as $v
-            | $vars | to_entries[] | {version: $v, variant: .key, libc: (.value.libc // "")}]' versions.json)
+          images=$(jq -c '[.variants as $vars | .versions | keys[] as $v | $vars | to_entries[]
+            | {version: $v, variant: .key, libc: (.value.libc // ""), dev: (.value.dev // false)}]' versions.json)
+          # one build job per image and architecture; it builds the runtime and, if any, the dev target
           builds=$(jq -c '[.[] as $i | ({arch: "amd64", runner: "ubuntu-24.04"}, {arch: "arm64", runner: "ubuntu-24.04-arm"}) | $i + .]' <<<"$images")
-          echo "images=$images" >> "$GITHUB_OUTPUT"
+          # one tagging job per published image: runtime for all, dev where the variant has one
+          tags=$(jq -c '[.[] | {version, variant, target: "runtime"}, (select(.dev) | {version, variant, target: "dev"})]' <<<"$images")
           echo "builds=$builds" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [generated, matrix]
@@ -60,18 +65,26 @@ jobs:
       VARIANT: ${{ matrix.variant }}
       ARCH: ${{ matrix.arch }}
       LIBC: ${{ matrix.libc }}
+      SCOPE: ${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.matrix.outputs.builds) }}
     steps:
       - uses: actions/checkout@v7
+      # base images come through Google's Docker Hub mirror, which has no pull limit;
+      # BuildKit falls back to Docker Hub for anything the mirror does not have
       - uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       # GHCR names must be lower case; GitHub owner names may not be
       - name: GHCR image name
         run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
+      # also on pull requests from this repository: authenticated pulls have a higher limit
       - name: Log in to Docker Hub
-        if: env.PUBLISH == 'true'
+        if: env.HAS_SECRETS == 'true'
         uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -86,17 +99,31 @@ jobs:
 
       # --pull makes a new base image (e.g. the monthly security update) change the cache key,
       # so the GitHub Actions layer cache only skips compiles that would produce the same result
-      - name: Build
+      - name: Build runtime
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
           pull: true
           load: true
           tags: tcl-test
-          cache-from: type=gha,scope=${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
-      - name: Test
+          cache-from: type=gha,scope=${{ env.SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.SCOPE }}
+      - name: Test runtime
         run: ./test.sh tcl-test "$VERSION"
+
+      # the dev target shares the build stage with the runtime image, so it reuses that compile
+      - name: Build dev
+        if: matrix.dev
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.version }}/${{ matrix.variant }}
+          target: dev
+          load: true
+          tags: tcl-test-dev
+          cache-from: type=gha,scope=${{ env.SCOPE }}
+      - name: Test dev
+        if: matrix.dev
+        run: TARGET=dev ./test.sh tcl-test-dev "$VERSION"
 
       - name: Package tarball
         if: matrix.libc != ''
@@ -113,9 +140,10 @@ jobs:
           name: tarball-${{ matrix.version }}-${{ matrix.arch }}-${{ matrix.libc }}
           path: tcl-*.tar.gz*
 
-      # the tested image again (cache hit), pushed untagged to both registries; the merge job tags the arch pair
-      - name: Push by digest
-        id: push
+      # the tested images again (cache hits), pushed untagged to both registries;
+      # the tagging job then only writes tag lists
+      - name: Push runtime by digest
+        id: push-runtime
         if: env.PUBLISH == 'true'
         uses: docker/build-push-action@v7
         with:
@@ -123,23 +151,43 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,"name=${{ env.IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
-      - name: Record digest
+          cache-from: type=gha,scope=${{ env.SCOPE }}
+      - name: Push dev by digest
+        id: push-dev
+        if: env.PUBLISH == 'true' && matrix.dev
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.version }}/${{ matrix.variant }}
+          target: dev
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,"name=${{ env.IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ env.SCOPE }}
+      - name: Record digests
         if: env.PUBLISH == 'true'
         env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: mkdir -p digests && touch "digests/${DIGEST#sha256:}"
+          RUNTIME_DIGEST: ${{ steps.push-runtime.outputs.digest }}
+          DEV_DIGEST: ${{ steps.push-dev.outputs.digest }}
+        run: |
+          mkdir -p digests/runtime digests/dev
+          touch "digests/runtime/${RUNTIME_DIGEST#sha256:}"
+          if [ -n "$DEV_DIGEST" ]; then touch "digests/dev/${DEV_DIGEST#sha256:}"; fi
       - if: env.PUBLISH == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: digests-${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.arch }}
-          path: digests/*
+          name: digests-${{ matrix.version }}-${{ matrix.variant }}-runtime-${{ matrix.arch }}
+          path: digests/runtime/*
+      - if: env.PUBLISH == 'true' && matrix.dev
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.version }}-${{ matrix.variant }}-dev-${{ matrix.arch }}
+          path: digests/dev/*
 
   merge:
     needs: [matrix, build]
     # also after a partial failure: every image whose two arch builds both passed still gets tagged
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
-    name: tag ${{ matrix.version }}-${{ matrix.variant }}
+    name: tag ${{ matrix.version }}-${{ matrix.variant }} ${{ matrix.target }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -147,21 +195,20 @@ jobs:
     env:
       VERSION: ${{ matrix.version }}
       VARIANT: ${{ matrix.variant }}
+      TARGET: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.matrix.outputs.images) }}
+        include: ${{ fromJSON(needs.matrix.outputs.tags) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: digests
-          pattern: digests-${{ matrix.version }}-${{ matrix.variant }}-*
+          pattern: digests-${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.target }}-*
           merge-multiple: true
       - name: Require both architectures
         run: test "$(ls digests | wc -l)" -eq 2
-      - uses: docker/setup-buildx-action@v4
-      # GHCR names must be lower case; GitHub owner names may not be
       - name: GHCR image name
         run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
       - uses: docker/login-action@v4
@@ -174,15 +221,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Docker Hub counts every manifest read as a pull, and its limits are low; so the per-arch
+      # images are only ever read from GHCR, and Docker Hub only receives writes (not limited).
+      # The runner's own docker CLI is used, not a BuildKit container, so the logins above apply.
       - name: Create multi-arch tags
         run: |
-          tags=$(./tags.sh "$VERSION" "$VARIANT")
-          targets=""
-          for t in $tags; do targets="$targets -t $IMAGE:$t -t $GHCR_IMAGE:$t"; done
-          # the per-arch digests already exist in both registries; this only writes the tag lists
-          docker buildx imagetools create $targets $(printf "$IMAGE@sha256:%s " $(ls digests))
-          docker buildx imagetools inspect "$IMAGE:${tags%% *}"
-          docker buildx imagetools inspect "$GHCR_IMAGE:${tags%% *}"
+          tags=$(./tags.sh "$VERSION" "$VARIANT" "$TARGET")
+          sources=$(printf "$GHCR_IMAGE@sha256:%s " $(ls digests))
+          ghcr_tags="" hub_tags=""
+          for t in $tags; do ghcr_tags="$ghcr_tags -t $GHCR_IMAGE:$t"; hub_tags="$hub_tags -t $IMAGE:$t"; done
+          docker buildx imagetools create --builder default $ghcr_tags $sources
+          docker buildx imagetools create --builder default $hub_tags $sources
+          docker buildx imagetools inspect --builder default "$GHCR_IMAGE:${tags%% *}"
 
   release:
     needs: build

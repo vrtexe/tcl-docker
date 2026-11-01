@@ -8,10 +8,10 @@
   },
   "variants": {
     "trixie":         { "template": "debian",     "base": "buildpack-deps:trixie" },
-    "slim-trixie":    { "template": "slim",       "base": "debian:trixie-slim" },
-    "alpine3.24":     { "template": "alpine",     "base": "alpine:3.24",                            "libc": "musl" },
-    "rocky9-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:9-minimal" },
-    "rocky8-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:8-minimal", "libc": "glibc" },
+    "slim-trixie":    { "template": "slim",       "base": "debian:trixie-slim", "dev": true },
+    "alpine3.24":     { "template": "alpine",     "base": "alpine:3.24",                            "libc": "musl", "dev": true },
+    "rocky9-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:9-minimal", "dev": true },
+    "rocky8-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:8-minimal", "libc": "glibc", "dev": true },
     "distroless":     { "template": "distroless", "base": "gcr.io/distroless/cc-debian13" }
   }
 }

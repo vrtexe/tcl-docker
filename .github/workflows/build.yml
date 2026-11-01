@@ -1,8 +1,12 @@
 name: build
 
 # Pull requests build and test only. Pushes to main, the monthly rebuild (base image fixes)
-# and v* tags also publish to Docker Hub and GHCR; v* tags additionally create a GitHub Release
-# with portable tarballs (glibc from the Rocky 8 builds, musl from the Alpine builds).
+# and v* tags also publish to GHCR, then mirror to Docker Hub; v* tags additionally create a
+# GitHub Release with portable tarballs (glibc from the Rocky 8 builds, musl from Alpine).
+#
+# GHCR is the primary registry. Docker Hub's free tier rate-limits the bursts that 100+
+# parallel jobs produce (even pushes), so only one job talks to it, one image at a time,
+# reading from GHCR and only writing to Docker Hub.
 on:
   push:
     branches: [main]
@@ -140,7 +144,7 @@ jobs:
           name: tarball-${{ matrix.version }}-${{ matrix.arch }}-${{ matrix.libc }}
           path: tcl-*.tar.gz*
 
-      # the tested images again (cache hits), pushed untagged to both registries;
+      # the tested images again (cache hits), pushed untagged to GHCR;
       # the tagging job then only writes tag lists
       - name: Push runtime by digest
         id: push-runtime
@@ -149,7 +153,7 @@ jobs:
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=${{ env.SCOPE }}
       - name: Push dev by digest
@@ -160,7 +164,7 @@ jobs:
           context: ${{ matrix.version }}/${{ matrix.variant }}
           target: dev
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=${{ env.SCOPE }}
       - name: Record digests
@@ -211,6 +215,35 @@ jobs:
         run: test "$(ls digests | wc -l)" -eq 2
       - name: GHCR image name
         run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # the runner's own docker CLI (not a BuildKit container), so the login above applies
+      - name: Create multi-arch tags
+        run: |
+          tags=$(./tags.sh "$VERSION" "$VARIANT" "$TARGET")
+          targets=""
+          for t in $tags; do targets="$targets -t $GHCR_IMAGE:$t"; done
+          docker buildx imagetools create --builder default $targets $(printf "$GHCR_IMAGE@sha256:%s " $(ls digests))
+          docker buildx imagetools inspect --builder default "$GHCR_IMAGE:${tags%% *}"
+
+  dockerhub:
+    needs: [matrix, merge]
+    # also after a partial failure; skipped when no Docker Hub account is configured
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && vars.DOCKERHUB_USERNAME != '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGES: ${{ needs.matrix.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: GHCR image name
+        run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
       - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -221,18 +254,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Docker Hub counts every manifest read as a pull, and its limits are low; so the per-arch
-      # images are only ever read from GHCR, and Docker Hub only receives writes (not limited).
-      # The runner's own docker CLI is used, not a BuildKit container, so the logins above apply.
-      - name: Create multi-arch tags
+      # one image at a time; each copy reads from GHCR and only writes to Docker Hub
+      - name: Mirror GHCR to Docker Hub
         run: |
-          tags=$(./tags.sh "$VERSION" "$VARIANT" "$TARGET")
-          sources=$(printf "$GHCR_IMAGE@sha256:%s " $(ls digests))
-          ghcr_tags="" hub_tags=""
-          for t in $tags; do ghcr_tags="$ghcr_tags -t $GHCR_IMAGE:$t"; hub_tags="$hub_tags -t $IMAGE:$t"; done
-          docker buildx imagetools create --builder default $ghcr_tags $sources
-          docker buildx imagetools create --builder default $hub_tags $sources
-          docker buildx imagetools inspect --builder default "$GHCR_IMAGE:${tags%% *}"
+          failed=""
+          while read -r version variant target; do
+            tags=$(./tags.sh "$version" "$variant" "$target")
+            source="$GHCR_IMAGE:${tags%% *}"
+            targets=""
+            for t in $tags; do targets="$targets -t $IMAGE:$t"; done
+            echo "::group::$source"
+            if ! docker buildx imagetools create --builder default $targets "$source"; then
+              failed="$failed ${tags%% *}"
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[] | "\(.version) \(.variant) \(.target)"' <<<"$IMAGES")
+          if [ -n "$failed" ]; then echo "not mirrored:$failed" >&2; exit 1; fi
 
   release:
     needs: build

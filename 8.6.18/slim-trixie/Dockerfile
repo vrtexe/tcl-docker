@@ -22,8 +22,10 @@ RUN set -eux; \
 # 8.5's configure probes use implicit declarations and K&R prototypes, which newer gcc rejects
 # its stack-direction probe is optimised away by newer gcc and answers "up"; every
 # supported CPU (x86-64, arm64) grows the stack down
-	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' tcl_cv_stack_grows_up=no ;; esac; \
-	./configure --prefix=/usr/local --enable-threads --enable-shared; \
+# 8.5 is built non-threaded, upstream's default for 8.5; 8.6 and 9 threaded, theirs
+	threads=--enable-threads; \
+	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' tcl_cv_stack_grows_up=no; threads=--disable-threads ;; esac; \
+	./configure --prefix=/usr/local "$threads" --enable-shared; \
 # Tcl 9's bundled packages run the in-tree tclsh, whose rpath points at the not yet installed libtcl
 	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \
 	LD_LIBRARY_PATH="$PWD" make install; \

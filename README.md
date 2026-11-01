@@ -15,8 +15,9 @@ These are community images. They are not published by the Tcl Core Team.
 | 8.5.19 | last 8.5 release; 8.5 is unsupported upstream since 2016 |
 | 8.5.13 | legacy, pinned for applications that require exactly this patch level (`package require -exact Tcl 8.5.13`); use 8.5.19 otherwise |
 
-Every version is built threaded and as a shared library, with the bundled packages
-(Thread, sqlite3, TDBC, itcl on 8.6+). Debian and Alpine also package Tcl
+Every version is built as a shared library. Tcl 8.5 is built non-threaded, as upstream
+builds it by default; 8.6 and 9 are threaded (9 always is) and include the bundled packages
+(Thread, sqlite3, TDBC, itcl). Debian and Alpine also package Tcl
 (`apt install tcl8.6`, `apk add tcl`); these images exist for the newest patch releases,
 for 9.1, and for 8.5, which no distribution ships any more.
 

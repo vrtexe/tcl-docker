@@ -3,7 +3,7 @@
 #   ./test.sh <image> <tcl-version>        ENGINE=podman ./test.sh ...
 #   PLATFORM=linux/amd64 ./test.sh ...     test another architecture under emulation
 #   TARGET=dev ./test.sh ...               a -dev image: also build and load a C extension
-# Checks version, CPU, threads, and that bundled packages and zlib load (8.6+).
+# Checks version, CPU, threading (8.5 off, 8.6 on), and that bundled packages and zlib load (8.6+).
 # tclsh is set as the entrypoint so the same test also runs on the shell-less distroless variant.
 set -euo pipefail
 image=$1 version=$2
@@ -18,9 +18,12 @@ esac
 "$engine" run --rm -i --platform "$platform" --entrypoint /usr/local/bin/tclsh "$image" /dev/stdin <<EOF
 set got "[info patchlevel] \$tcl_platform(machine)"
 if {\$got ne "$version $machine"} { puts stderr "FAIL: \$got, want $version $machine"; exit 1 }
-# 8.5 needs --enable-threads; Tcl 9 dropped tcl_platform(threaded) because it is always threaded
-if {![info exists tcl_platform(threaded)] && ![package vsatisfies [info tclversion] 9-]} {
-	puts stderr "FAIL: not threaded"; exit 1
+# 8.5 is built non-threaded (upstream's default), 8.6 threaded; Tcl 9 is always threaded and
+# dropped tcl_platform(threaded)
+if {![package vsatisfies [info tclversion] 9-]} {
+	set threaded [expr {[info exists tcl_platform(threaded)] && \$tcl_platform(threaded)}]
+	set want [package vsatisfies [info tclversion] 8.6-]
+	if {\$threaded != \$want} { puts stderr "FAIL: threaded=\$threaded, want \$want"; exit 1 }
 }
 if {[package vsatisfies [info tclversion] 8.6-]} {
 	package require Thread

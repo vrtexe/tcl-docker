@@ -1,0 +1,17 @@
+{
+  "versions": {
+    "8.5.13": { "sha256": "9b868dd563e65671a26fcf518b6b86c1bb1b6756f48fdc90f04301d4f3a6596a" },
+    "8.5.19": { "sha256": "d3f04456da873d17f02efc30734b0300fb6c3b85028d445fe284b83253a6db18" },
+    "8.6.18": { "sha256": "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e" },
+    "9.0.4":  { "sha256": "d0aed49230bc02a65c1e0229e65f34590a4b037ec40d546f32573b467f7551ea" },
+    "9.1.0":  { "sha256": "536c45543f64d6eb11832d97ba3494aacff046fbc5040273bd55258d0e448ff1" }
+  },
+  "variants": {
+    "trixie":         { "template": "debian",     "base": "buildpack-deps:trixie" },
+    "slim-trixie":    { "template": "slim",       "base": "debian:trixie-slim" },
+    "alpine3.24":     { "template": "alpine",     "base": "alpine:3.24",                            "libc": "musl" },
+    "rocky9-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:9-minimal" },
+    "rocky8-minimal": { "template": "rocky",      "base": "docker.io/rockylinux/rockylinux:8-minimal", "libc": "glibc" },
+    "distroless":     { "template": "distroless", "base": "gcr.io/distroless/cc-debian13" }
+  }
+}

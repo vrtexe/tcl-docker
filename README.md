@@ -27,8 +27,8 @@ for 9.1, and for 8.5, which no distribution ships any more.
 | Debian | none, `-trixie` | `buildpack-deps:trixie` | ~1.1 GB | default; includes gcc and the Tcl headers, for building extensions |
 | Debian slim | `-slim` | `debian:trixie-slim` | ~117 MB | runtime |
 | Alpine | `-alpine` | `alpine:3.24` | ~23 MB | smallest with a shell |
-| Rocky Linux 9 | `-rocky9-minimal` | `rockylinux/rockylinux:9-minimal` | ~182 MB | RHEL-family systems |
-| Rocky Linux 8 | `-rocky8-minimal` | `rockylinux/rockylinux:8-minimal` | ~113 MB | older RHEL-family systems |
+| Rocky Linux 9 | `-rocky9-minimal` | `quay.io/rockylinux/rockylinux:9-minimal` | ~182 MB | RHEL-family systems |
+| Rocky Linux 8 | `-rocky8-minimal` | `quay.io/rockylinux/rockylinux:8-minimal` | ~113 MB | older RHEL-family systems |
 | distroless | `-distroless` | `gcr.io/distroless/cc-debian13` | ~47 MB | no shell, no package manager; `tclsh` is the entrypoint |
 
 Sizes are uncompressed, measured on arm64.
@@ -121,6 +121,7 @@ Each GitHub Release also carries the binaries outside a container image:
 |---|---|---|
 | `tcl-<version>-linux-<arch>-glibc.tar.gz` | Rocky Linux 8 (glibc 2.28) | glibc 2.28 or newer: Debian 10+, Ubuntu 20.04+, RHEL/Rocky 8+ |
 | `tcl-<version>-linux-<arch>-musl.tar.gz` | Alpine 3.24 | Alpine and other musl systems |
+| `tcl<version>-src.tar.gz` | — | the unmodified official source each build used, checked against `versions.json` |
 
 They are built for `/usr/local`:
 

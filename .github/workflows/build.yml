@@ -40,11 +40,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       builds: ${{ steps.m.outputs.builds }}
+      month: ${{ steps.m.outputs.month }}
       tags: ${{ steps.m.outputs.tags }}
     steps:
       - uses: actions/checkout@v7
       - id: m
         run: |
+          # one value for the whole run: the Rocky images rerun their OS update when it changes
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
           images=$(jq -c '[.variants as $vars | .versions | keys[] as $v | $vars | to_entries[]
             | {version: $v, variant: .key, dev: (.value.dev // false)}]' versions.json)
           # one build job per image and architecture; it builds the runtime and, if any, the dev target
@@ -98,6 +101,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
+          build-args: UPDATE_MONTH=${{ needs.matrix.outputs.month }}
           pull: true
           load: true
           tags: tcl-test
@@ -112,6 +116,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
+          build-args: UPDATE_MONTH=${{ needs.matrix.outputs.month }}
           target: dev
           load: true
           tags: tcl-test-dev
@@ -128,6 +133,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
+          build-args: UPDATE_MONTH=${{ needs.matrix.outputs.month }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -138,6 +144,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.version }}/${{ matrix.variant }}
+          build-args: UPDATE_MONTH=${{ needs.matrix.outputs.month }}
           target: dev
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true

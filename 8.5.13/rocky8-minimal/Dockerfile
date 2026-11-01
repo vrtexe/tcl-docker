@@ -5,12 +5,12 @@ FROM quay.io/rockylinux/rockylinux:8-minimal AS build
 ENV TCL_VERSION=8.5.13
 ENV TCL_SHA256=9b868dd563e65671a26fcf518b6b86c1bb1b6756f48fdc90f04301d4f3a6596a
 
-# The mirrorlist can hand out a plain-http mirror that stalls; use the CDN-backed origin over https.
 # The toolchain stays in this stage: it is also the base of the "dev" target.
-ARG ROCKY_MIRROR=https://dl.rockylinux.org
+# The Rocky base images are rebuilt rarely (8-minimal last in 2024), so OS updates are applied
+# here; UPDATE_MONTH (CI passes the current month) reruns this step monthly instead of caching it.
+ARG UPDATE_MONTH
 RUN set -eux; \
-	sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e "s|^#baseurl=http://dl.rockylinux.org|baseurl=${ROCKY_MIRROR}|" \
-		/etc/yum.repos.d/*.repo; \
+	microdnf -y update; \
 # findutils: Tcl 9's build runs find to pack its script library; Rocky 8 minimal lacks it
 	microdnf -y install gcc make tar gzip zlib-devel findutils; \
 	microdnf clean all
@@ -59,6 +59,10 @@ FROM quay.io/rockylinux/rockylinux:8-minimal
 
 ENV TCL_VERSION=8.5.13
 ENV TCL_SHA256=9b868dd563e65671a26fcf518b6b86c1bb1b6756f48fdc90f04301d4f3a6596a
+
+# OS updates for the published image too (see the build stage)
+ARG UPDATE_MONTH
+RUN microdnf -y update && microdnf clean all
 
 COPY --from=build /usr/local /usr/local
 

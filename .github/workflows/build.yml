@@ -1,12 +1,7 @@
 name: build
 
-# Pull requests build and test only. Pushes to main, the monthly rebuild (base image fixes)
-# and manual runs also publish to GHCR, then mirror to Docker Hub.
-# GitHub Releases with binary tarballs come from release.yml (v* tags); it publishes no images.
-#
-# GHCR is the primary registry. Docker Hub's free tier rate-limits the bursts that 100+
-# parallel jobs produce (even pushes), so only one job talks to it, one image at a time,
-# reading from GHCR and only writing to Docker Hub.
+# Pull requests build and test. Pushes to main, the monthly run and manual runs also publish
+# to GHCR, then one job mirrors to Docker Hub image by image, to stay within its rate limits.
 on:
   push:
     branches: [main]
@@ -23,8 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # repository variable DOCKERHUB_USERNAME and secret DOCKERHUB_TOKEN (a Docker Hub access token);
-  # GHCR needs nothing extra: GITHUB_TOKEN pushes to ghcr.io/<owner>/tcl (GHCR_IMAGE, set per job)
+  # Needs the variable DOCKERHUB_USERNAME and the secret DOCKERHUB_TOKEN; GHCR uses GITHUB_TOKEN.
   IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/tcl
   PUBLISH: ${{ github.event_name != 'pull_request' }}
 
@@ -46,13 +40,12 @@ jobs:
       - uses: actions/checkout@v7
       - id: m
         run: |
-          # one value for the whole run: the Rocky images rerun their OS update when it changes
+          # Once per run; a new value reruns the Rocky OS update.
           echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
           images=$(jq -c '[.variants as $vars | .versions | keys[] as $v | $vars | to_entries[]
             | {version: $v, variant: .key, dev: (.value.dev // false)}]' versions.json)
-          # one build job per image and architecture; it builds the runtime and, if any, the dev target
+          # A build job per image and arch, a tag job per published image.
           builds=$(jq -c '[.[] as $i | ({arch: "amd64", runner: "ubuntu-24.04"}, {arch: "arm64", runner: "ubuntu-24.04-arm"}) | $i + .]' <<<"$images")
-          # one tagging job per published image: runtime for all, dev where the variant has one
           tags=$(jq -c '[.[] | {version, variant, target: "runtime"}, (select(.dev) | {version, variant, target: "dev"})]' <<<"$images")
           echo "builds=$builds" >> "$GITHUB_OUTPUT"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
@@ -75,16 +68,13 @@ jobs:
         include: ${{ fromJSON(needs.matrix.outputs.builds) }}
     steps:
       - uses: actions/checkout@v7
-      # Builds never touch Docker Hub: Debian and Alpine come through Google's Docker Hub mirror
-      # (no pull limit), Rocky from quay.io, distroless from gcr.io. That keeps the account's
-      # small Docker Hub quota for the mirror job. BuildKit falls back to Docker Hub only if the
-      # mirror lacks an image.
+      # No Docker Hub pulls: Debian and Alpine via mirror.gcr.io, Rocky from quay.io.
       - uses: docker/setup-buildx-action@v4
         with:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
-      # GHCR names must be lower case; GitHub owner names may not be
+      # GHCR names must be lower case.
       - name: GHCR image name
         run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
       - name: Log in to GHCR
@@ -95,8 +85,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --pull makes a new base image (e.g. the monthly security update) change the cache key,
-      # so the GitHub Actions layer cache only skips compiles that would produce the same result
+      # pull: a new base image changes the cache key, so updates are never skipped.
       - name: Build runtime
         uses: docker/build-push-action@v7
         with:
@@ -110,7 +99,7 @@ jobs:
       - name: Test runtime
         run: ./test.sh tcl-test "$VERSION"
 
-      # the dev target shares the build stage with the runtime image, so it reuses that compile
+      # Reuses the dev stage the runtime image is built from, so no second compile.
       - name: Build dev
         if: matrix.dev
         uses: docker/build-push-action@v7
@@ -125,8 +114,7 @@ jobs:
         if: matrix.dev
         run: TARGET=dev ./test.sh tcl-test-dev "$VERSION"
 
-      # the tested images again (cache hits), pushed untagged to GHCR;
-      # the tagging job then only writes tag lists
+      # The tested images again (cache hits), pushed untagged; the tag job names them.
       - name: Push runtime by digest
         id: push-runtime
         if: env.PUBLISH == 'true'
@@ -172,7 +160,7 @@ jobs:
 
   merge:
     needs: [matrix, build]
-    # also after a partial failure: every image whose two arch builds both passed still gets tagged
+    # Also after partial failures: images with both arches still get tagged.
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     name: tag ${{ matrix.version }}-${{ matrix.variant }} ${{ matrix.target }}
     runs-on: ubuntu-24.04
@@ -204,7 +192,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # the runner's own docker CLI (not a BuildKit container), so the login above applies
+      # The runner's docker CLI, not BuildKit, so the GHCR login applies.
       - name: Create multi-arch tags
         run: |
           tags=$(./tags.sh "$VERSION" "$VARIANT" "$TARGET")
@@ -215,7 +203,7 @@ jobs:
 
   dockerhub:
     needs: [matrix, merge]
-    # also after a partial failure; skipped when no Docker Hub account is configured
+    # Also after partial failures; skipped without a Docker Hub account.
     if: ${{ !cancelled() && github.event_name != 'pull_request' && vars.DOCKERHUB_USERNAME != '' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -227,10 +215,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: GHCR image name
         run: echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tcl" >> "$GITHUB_ENV"
-      # skopeo instead of "docker buildx imagetools": it sends the credentials with every
-      # request, while imagetools talked to Docker Hub unauthenticated, so it hit the
-      # per-IP limit that all users of GitHub's shared runner IPs exhaust.
-      # --all --preserve-digests copies the multi-arch index unchanged (same digests as GHCR).
+      # skopeo sends the credentials on every request; imagetools did not and hit the shared IP limit.
+      # --all --preserve-digests keeps the multi-arch index and digests identical to GHCR.
       - name: Mirror GHCR to Docker Hub
         env:
           HUB_USER: ${{ vars.DOCKERHUB_USERNAME }}

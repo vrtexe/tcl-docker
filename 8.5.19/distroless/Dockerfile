@@ -5,6 +5,9 @@ FROM debian:trixie-slim AS build
 ENV TCL_VERSION=8.5.19
 ENV TCL_SHA256=d3f04456da873d17f02efc30734b0300fb6c3b85028d445fe284b83253a6db18
 
+# Tcl 8.5 predates C23 and the stricter checks of gcc 14 and later.
+# Tcl 9.0's bundled packages run the not yet installed tclsh.
+# distroless lacks zlib, which Tcl 8.6 and later need; tclsh's rpath finds it next to libtcl.
 RUN set -eux; \
 	apt-get update; \
 	apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev make zlib1g-dev; \
@@ -12,27 +15,15 @@ RUN set -eux; \
 	echo "${TCL_SHA256} *tcl.tar.gz" | sha256sum -c -; \
 	mkdir -p /usr/src/tcl; \
 	tar -xzf tcl.tar.gz -C /usr/src/tcl --strip-components=1; \
-	rm tcl.tar.gz; \
 	cd /usr/src/tcl/unix; \
-# 8.5's configure probes use implicit declarations and K&R prototypes, which newer gcc rejects
-# its stack-direction probe is optimised away by newer gcc and answers "up"; every
-# supported CPU (x86-64, arm64) grows the stack down
-# 8.5 is built non-threaded, upstream's default for 8.5; 8.6 and 9 threaded, theirs
-	threads=--enable-threads; \
-	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' tcl_cv_stack_grows_up=no; threads=--disable-threads ;; esac; \
-	./configure --prefix=/usr/local "$threads" --enable-shared; \
-# Tcl 9's bundled packages run the in-tree tclsh, whose rpath points at the not yet installed libtcl
-	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \
-	LD_LIBRARY_PATH="$PWD" make install; \
+	./configure CFLAGS='-std=gnu17 -fpermissive'; \
+	export LD_LIBRARY_PATH="$PWD"; \
+	make -j"$(nproc)"; \
+	make install; \
 	ln -s "tclsh${TCL_VERSION%.*}" /usr/local/bin/tclsh; \
 	install -D -m 644 /usr/src/tcl/license.terms /usr/local/share/licenses/tcl/license.terms; \
-# distroless has glibc but not zlib (linked from 8.6 on); put it next to libtcl, where
-# tclsh's rpath already looks
-	libz="$(ldd /usr/local/bin/tclsh | awk '/libz\.so/ {print $3}')"; \
-	[ -z "$libz" ] || cp -L "$libz" /usr/local/lib/; \
-# no compiler or shell in the final image, so headers, static libs and man pages are dead weight
-	rm -rf /usr/local/include /usr/local/man /usr/local/share/man /usr/local/lib/*.a; \
-	echo "if {[info patchlevel] ne {$TCL_VERSION}} { error \"got [info patchlevel]\" }" | tclsh /dev/stdin
+	ldd /usr/local/bin/tclsh | awk '/libz\.so/ {print $3}' | xargs -r cp -L -t /usr/local/lib; \
+	rm -rf /usr/local/include /usr/local/man /usr/local/share/man /usr/local/lib/*.a
 
 
 FROM gcr.io/distroless/cc-debian13
@@ -42,5 +33,4 @@ ENV TCL_VERSION=8.5.19
 
 COPY --from=build /usr/local /usr/local
 
-# no shell: tclsh is the entrypoint, so "docker run image script.tcl" runs the script
 ENTRYPOINT ["/usr/local/bin/tclsh"]

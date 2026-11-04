@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Smoke-test one image on the machine's own architecture:
-#   ./test.sh <image> <tcl-version>        ENGINE=podman ./test.sh ...
-#   PLATFORM=linux/amd64 ./test.sh ...     test another architecture under emulation
-#   TARGET=dev ./test.sh ...               a -dev image: also build and load a C extension
-# Checks version, CPU, threading (8.5 off, 8.6 on), and that bundled packages and zlib load (8.6+).
-# tclsh is set as the entrypoint so the same test also runs on the shell-less distroless variant.
+# Smoke-test an image on this machine's architecture: ./test.sh <image> <tcl-version>
+# Options: ENGINE=podman, PLATFORM=linux/amd64 (emulated), TARGET=dev (also builds a C extension).
+# tclsh is the entrypoint, so the test also runs on distroless.
 set -euo pipefail
 image=$1 version=$2
 engine=${ENGINE:-docker}
@@ -18,8 +15,7 @@ esac
 "$engine" run --rm -i --platform "$platform" --entrypoint /usr/local/bin/tclsh "$image" /dev/stdin <<EOF
 set got "[info patchlevel] \$tcl_platform(machine)"
 if {\$got ne "$version $machine"} { puts stderr "FAIL: \$got, want $version $machine"; exit 1 }
-# 8.5 is built non-threaded (upstream's default), 8.6 threaded; Tcl 9 is always threaded and
-# dropped tcl_platform(threaded)
+# Tcl 9 is always threaded and has no tcl_platform(threaded).
 if {![package vsatisfies [info tclversion] 9-]} {
 	set threaded [expr {[info exists tcl_platform(threaded)] && \$tcl_platform(threaded)}]
 	set want [package vsatisfies [info tclversion] 8.6-]
@@ -30,12 +26,12 @@ if {[package vsatisfies [info tclversion] 8.6-]} {
 	package require sqlite3
 	if {[zlib decompress [zlib compress hello]] ne "hello"} { puts stderr "FAIL: zlib"; exit 1 }
 }
-# Tcl 8.5's configure probe can wrongly decide the C stack grows up, which disables its stack check
+# Tcl 8.5's configure can get this wrong with newer gcc.
 set cfg [open /usr/local/lib/tclConfig.sh]
 if {[string match *TCL_STACK_GROWS_UP=1* [read \$cfg]]} { puts stderr "FAIL: TCL_STACK_GROWS_UP=1"; exit 1 }
 close \$cfg
 if {![file exists /usr/local/share/licenses/tcl/license.terms]} { puts stderr "FAIL: license missing"; exit 1 }
-# images with a shell also provide /usr/bin/tclsh for scripts with a hardcoded #! line
+# Every image with a shell links /usr/bin/tclsh.
 if {[file exists /bin/sh]
 		&& ([catch {file readlink /usr/bin/tclsh} link] || \$link ne "/usr/local/bin/tclsh")} {
 	puts stderr "FAIL: /usr/bin/tclsh is not a link to /usr/local/bin/tclsh"; exit 1
@@ -44,7 +40,7 @@ if {"$target" eq "dev"} {
 	foreach tool {make gcc curl} {
 		if {[auto_execok \$tool] eq ""} { puts stderr "FAIL: \$tool missing"; exit 1 }
 	}
-	# what -dev is for: compile an extension against the stubs library and load it
+	# Build and load an extension against the stubs library.
 	set f [open /tmp/hello.c w]
 	puts \$f {
 		#include <tcl.h>

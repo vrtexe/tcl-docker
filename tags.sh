@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Print the tags for one version and variant, newest-wins like the official images:
-#   ./tags.sh 8.6.18 trixie   ->  8.6.18 8.6.18-trixie 8.6 8.6-trixie 8 8-trixie
-# A version gets its minor alias (8.6) if it is the newest of that minor, the major
-# alias (8) if newest of that major, and "latest" if newest overall.
-# trixie is the default variant (no suffix); slim and alpine also get short names.
-# A third argument "dev" gives the tags of the -dev image: every tag above plus "-dev".
+# Print the tags of one image: ./tags.sh 8.6.18 trixie [dev]
+# Minor (8.6), major (8) and latest aliases go to the newest matching version.
 set -euo pipefail
 cd "$(dirname "$0")"
 version=$1 variant=$2 target=${3:-runtime}

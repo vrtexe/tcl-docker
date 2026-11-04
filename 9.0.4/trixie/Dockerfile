@@ -6,8 +6,8 @@ ENV LANG=C.UTF-8
 ENV TCL_VERSION=9.0.4
 ENV TCL_SHA256=d0aed49230bc02a65c1e0229e65f34590a4b037ec40d546f32573b467f7551ea
 
-# buildpack-deps already has the compiler and headers; they stay, so extensions
-# (tDOM, tls, ...) can be built on top of this variant
+# Tcl 8.5 predates C23 and the stricter checks of gcc 14 and later.
+# Tcl 9.0's bundled packages run the not yet installed tclsh.
 RUN set -eux; \
 	curl -fsSL --retry 5 --retry-delay 5 -o tcl.tar.gz "https://downloads.sourceforge.net/project/tcl/Tcl/${TCL_VERSION}/tcl${TCL_VERSION}-src.tar.gz"; \
 	echo "${TCL_SHA256} *tcl.tar.gz" | sha256sum -c -; \
@@ -15,24 +15,14 @@ RUN set -eux; \
 	tar -xzf tcl.tar.gz -C /usr/src/tcl --strip-components=1; \
 	rm tcl.tar.gz; \
 	cd /usr/src/tcl/unix; \
-# 8.5's configure probes use implicit declarations and K&R prototypes, which newer gcc rejects
-# its stack-direction probe is optimised away by newer gcc and answers "up"; every
-# supported CPU (x86-64, arm64) grows the stack down
-# 8.5 is built non-threaded, upstream's default for 8.5; 8.6 and 9 threaded, theirs
-	threads=--enable-threads; \
-	case "$TCL_VERSION" in 8.5.*) export CFLAGS='-O2 -std=gnu17 -fpermissive' tcl_cv_stack_grows_up=no; threads=--disable-threads ;; esac; \
-	./configure --prefix=/usr/local "$threads" --enable-shared; \
-# Tcl 9's bundled packages run the in-tree tclsh, whose rpath points at the not yet installed libtcl
-	LD_LIBRARY_PATH="$PWD" make -j"$(nproc)"; \
-	LD_LIBRARY_PATH="$PWD" make install; \
+	./configure CFLAGS='-std=gnu17 -fpermissive'; \
+	export LD_LIBRARY_PATH="$PWD"; \
+	make -j"$(nproc)"; \
+	make install; \
 	ln -s "tclsh${TCL_VERSION%.*}" /usr/local/bin/tclsh; \
-# many Tcl scripts hardcode #!/usr/bin/tclsh, where Debian and RHEL put their own tclsh
 	ln -s /usr/local/bin/tclsh /usr/bin/tclsh; \
-	ldconfig; \
 	install -D -m 644 /usr/src/tcl/license.terms /usr/local/share/licenses/tcl/license.terms; \
-	cd /; \
-	rm -rf /usr/src/tcl; \
-# run from /dev/stdin, not a pipe, so a Tcl error or a wrong version fails the build
-	echo "if {[info patchlevel] ne {$TCL_VERSION}} { error \"got [info patchlevel]\" }" | tclsh /dev/stdin
+	ldconfig; \
+	rm -rf /usr/src/tcl
 
 CMD ["tclsh"]

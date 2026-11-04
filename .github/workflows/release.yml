@@ -1,10 +1,7 @@
 name: release
 
-# A v* tag creates a GitHub Release with portable binaries and the Tcl sources they were built
-# from. It builds only the variants marked with "libc" in versions.json (Rocky Linux 8 for
-# glibc, Alpine for musl) from the tagged commit, tests them, and publishes no images.
-# The layer cache is shared with build.yml (same scopes; a tag run may read main's cache),
-# so a release of unchanged Dockerfiles is mostly cache hits.
+# A v* tag builds and tests the tarball variants ("libc" in versions.json) from the tagged commit
+# and creates the GitHub Release with the tarballs and the Tcl sources. Publishes no images.
 on:
   push:
     tags: ['v*']
@@ -22,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
       - id: m
         run: |
-          # one value for the whole run: the Rocky images rerun their OS update when it changes
+          # Once per run; a new value reruns the Rocky OS update.
           echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
           builds=$(jq -c '[.variants as $vars | .versions | keys[] as $v
             | $vars | to_entries[] | select(.value.libc) | {version: $v, variant: .key, libc: .value.libc}
@@ -73,7 +70,7 @@ jobs:
           path: tcl-*.tar.gz*
 
   release:
-    # all or nothing: a release is only created when every tarball built and passed its test
+    # Only when every tarball built and passed its test.
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -85,7 +82,7 @@ jobs:
           path: dist
           pattern: tarball-*
           merge-multiple: true
-      # the unmodified official sources the binaries were built from, checked against versions.json
+      # The official sources, checked against versions.json.
       - name: Add Tcl sources
         run: |
           jq -r '.versions | to_entries[] | "\(.key) \(.value.sha256)"' versions.json |

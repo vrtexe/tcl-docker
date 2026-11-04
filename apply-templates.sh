@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Render <version>/<variant>/Dockerfile for every version and variant in versions.json.
-# The generated files are committed, so each one can be read and built on its own.
+# Render <version>/<variant>/Dockerfile from the templates. The output is committed.
 set -euo pipefail
 cd "$(dirname "$0")"
 
